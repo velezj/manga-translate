@@ -7,6 +7,7 @@ import logging
 import pathlib
 from typing import Optional, Callable, Sequence, Tuple, Any, Dict
 import datetime
+import re
 
 import skimage
 import skimage.color
@@ -14,6 +15,7 @@ import skimage.io
 import skimage.transform
 import skimage.metrics
 import skimage.feature
+import skimage.measure
 
 import dill
 
@@ -46,6 +48,8 @@ def compute_similarity(
     # sim = skimage.metrics.structural_similarity( scaled_a, scaled_b )
 
     info = {}
+    info['image_a'] = image_a
+    info['image_b'] = image_b
 
     corner_keypoints_a = skimage.feature.corner_peaks(
         skimage.feature.corner_harris( image_a ),
@@ -58,7 +62,9 @@ def compute_similarity(
     info['corner_keypoints_a'] = corner_keypoints_a
     info['corner_keypoints_b'] = corner_keypoints_b
 
-    extractor = skimage.feature.BRIEF()
+    extractor = skimage.feature.BRIEF(
+        descriptor_size=512,
+        patch_size=101 )
     extractor.extract( image_a, corner_keypoints_a )
     keypoints_a = corner_keypoints_a[ extractor.mask ]
     descriptors_a = extractor.descriptors
@@ -82,14 +88,21 @@ def compute_similarity(
         matchpoints_b = keypoints_b[ matches[:,1] ]
 
 
-        estimated_transform = skimage.transform.SimilarityTransform()
-        success = estimated_transform.estimate( matchpoints_a,
-                                                matchpoints_b )
+        # estimated_transform = skimage.transform.SimilarityTransform()
+        # success = estimated_transform.estimate( matchpoints_a,
+        #                                         matchpoints_b )
+        estimated_transform, inliers = skimage.measure.ransac(
+            (matchpoints_a,matchpoints_b),
+            skimage.transform.SimilarityTransform,
+            min_samples = 5,
+            residual_threshold = 10.0 )
+        success = True
 
         info['matches'] = matches
         info['matchpoints_a'] = matchpoints_a
         info['matchpoints_b'] = matchpoints_b
         info['estimated_transform'] = estimated_transform
+        info['inliers'] = inliers
 
         if success:
             warped_image_a = skimage.transform.warp(
@@ -112,7 +125,7 @@ def compute_similarity(
     warped_image_a = skimage.img_as_float( warped_image_a )
     image_b = skimage.img_as_float( image_b )
     info['warped_image_a'] = warped_image_a
-    info['image_b'] = image_b
+    info['image_b_as_float'] = image_b
     sim = skimage.metrics.structural_similarity( warped_image_a, image_b )
     info['sim'] = sim
 
@@ -130,10 +143,10 @@ def compute_similarity_from_paths(
     Alsoreturns a dictionary with info/debug information
     """
 
-    image_a = skimage.io.imread( path_a.as_posix(),
-                                 as_gray=True )
-    image_b = skimage.io.imread( path_b.as_posix(),
-                                 as_gray=True )
+    image_a = skimage.img_as_float( skimage.io.imread( path_a.as_posix(),
+                                                       as_gray=True ) )
+    image_b = skimage.img_as_float( skimage.io.imread( path_b.as_posix(),
+                                                       as_gray=True ) )
     return compute_similarity( image_a, image_b )
 
 ## ======================================================================
@@ -187,7 +200,8 @@ def align_image_directories(
 
     # create log/info/debug directory for stuff
     now = datetime.datetime.now()
-    base_info_path = pathlib.Path( "log_" + now.isoformat() + "/" )
+    now_string = re.sub( r'\W+', '_', now.isoformat() )
+    base_info_path = pathlib.Path( "log_" + now_string + "/" )
     base_info_path.mkdir( parents=True, exist_ok=True )
 
     # build up sequences for a and b sources
@@ -226,21 +240,26 @@ def align_image_directories(
         with open( base_info_path / "{0:04d}-candidates.dill".format(index_a),
                    'wb' ) as f:
             dill.dump( candidates, f )
+        all_similarities = [ ( compute_similarity_from_paths( path_a, p ), p )
+                             for p in candidates ]
         similarities = sorted(
             map(
                 lambda x: ( x[0][0], x[1], x[0][1] ),
                 filter(
                     lambda x: x[0][0] >= min_similarity_threshold,
-                    [ ( compute_similarity_from_paths( path_a, p ), p )
-                      for p in candidates ] ) ),
+                    all_similarities ) ),
             reverse=True )
         _log().info( "  Similarities: #=%s  %s ... %s",
                      len(similarities),
                      similarities[0][:2] if len(similarities) > 0 else None,
                      similarities[-1][:2] if len(similarities) > 0 else None )
+        with open( base_info_path / "{0:04d}-all-similarities.dill".format(index_a),
+                   'wb' ) as f:
+            dill.dump( all_similarities, f )
         with open( base_info_path / "{0:04d}-similarities.dill".format(index_a),
                    'wb' ) as f:
             dill.dump( similarities, f )
+
 
         if len( similarities ) > 0:
             aligned_files.append(
