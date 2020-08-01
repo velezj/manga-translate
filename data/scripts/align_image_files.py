@@ -16,8 +16,11 @@ import skimage.transform
 import skimage.metrics
 import skimage.feature
 import skimage.measure
+import skimage.draw
 
 import dill
+import matplotlib.pyplot as plt
+import numpy as np
 
 ## ======================================================================
 
@@ -28,39 +31,62 @@ def _log():
 
 def compute_similarity(
         image_a,
-        image_b ) -> Tuple[ float, Dict ]:
+        image_b,
+        base_dir: pathlib.Path,
+        preffix: str ) -> Tuple[ float, Dict ]:
     """
     Given two images (float grayscale),
     returns the similarity score,
     from 0 (not similar)
     to 1 (same image).
-    
+
     Also returns a dictionary with debug information
     """
-
-    # min_shape = ( min( image_a.shape[0], image_b.shape[0] ),
-    #               min( image_a.shape[1], image_b.shape[1] ) )
-    # scaled_a = skimage.transform.resize( image_a, min_shape,
-    #                                      anti_aliasing=True )
-    # scaled_b = skimage.transform.resize( image_b, min_shape,
-    #                                      anti_aliasing=True )
-
-    # sim = skimage.metrics.structural_similarity( scaled_a, scaled_b )
+    base_dir.mkdir( parents=True, exist_ok=True )
 
     info = {}
-    info['image_a'] = image_a
-    info['image_b'] = image_b
+    #info['image_a'] = image_a
+    #info['image_b'] = image_b
 
-    corner_keypoints_a = skimage.feature.corner_peaks(
-        skimage.feature.corner_harris( image_a ),
-        min_distance = 5,
-        threshold_rel = 0.1 )
-    corner_keypoints_b = skimage.feature.corner_peaks(
-        skimage.feature.corner_harris( image_b ),
-        min_distance = 5,
-        threshold_rel = 0.1 )
+    # corner_keypoints_a = skimage.feature.corner_peaks(
+    #     skimage.feature.corner_harris( image_a ),
+    #     min_distance = 5,
+    #     threshold_rel = 0.1 )
+    # corner_keypoints_b = skimage.feature.corner_peaks(
+    #     skimage.feature.corner_harris( image_b ),
+    #     min_distance = 5,
+    #     threshold_rel = 0.1 )
+    corner_keypoints_a = skimage.feature.blob_doh(
+        image_a,
+        min_sigma=20,
+        max_sigma=100 )
+    corner_keypoints_b = skimage.feature.blob_doh(
+        image_b,
+        min_sigma=20,
+        max_sigma=100 )
+    corner_keypoints_a = np.delete( corner_keypoints_a,
+                                    2,
+                                    1 )
+    corner_keypoints_b = np.delete( corner_keypoints_b,
+                                    2,
+                                    1 )
+
+
     info['corner_keypoints_a'] = corner_keypoints_a
     info['corner_keypoints_b'] = corner_keypoints_b
+    info['corner_keypoints_a_image'] = generate_corner_image(
+        "corner_keypoints_a.png",
+        image_a,
+        corner_keypoints_a,
+        base_dir,
+        preffix )
+    info['corner_keypoints_b_image'] = generate_corner_image(
+        "corner_keypoints_b.png",
+        image_b,
+        corner_keypoints_b,
+        base_dir,
+        preffix)
+
 
     extractor = skimage.feature.BRIEF(
         descriptor_size=512,
@@ -73,8 +99,21 @@ def compute_similarity(
     descriptors_b = extractor.descriptors
     info['keypoints_a'] = keypoints_a
     info['keypoints_b'] = keypoints_b
-    info['descriptors_a'] = descriptors_a
-    info['descriptors_b'] = descriptors_b
+    #info['descriptors_a'] = descriptors_a
+    #info['descriptors_b'] = descriptors_b
+    info['keypoints_a_image'] = generate_keypoints_image(
+        "keypoints_a.png",
+        image_a,
+        keypoints_a,
+        base_dir,
+        preffix )
+    info['keypoints_b_image'] = generate_keypoints_image(
+        'keypoints_b.png',
+        image_b,
+        keypoints_b,
+        base_dir,
+        preffix )
+
 
     warped_image_a = None
     use_raw_scaling = False
@@ -91,18 +130,65 @@ def compute_similarity(
         # estimated_transform = skimage.transform.SimilarityTransform()
         # success = estimated_transform.estimate( matchpoints_a,
         #                                         matchpoints_b )
+        def is_valid_transform( trans, *data ):
+            if trans is None:
+                return False
+            data_is_valid = True
+            if data is not None and len(data) > 0:
+                data_is_valid = np.all( np.isfinite( data ) )
+            transform_is_finite = np.all( np.isfinite( trans.params))
+            transform_is_finite = ( transform_is_finite
+                                    and np.isfinite( trans.scale ) )
+            return transform_is_finite and data_is_valid
+        min_samples = min( matchpoints_a.shape[0] - 1, 20 )
         estimated_transform, inliers = skimage.measure.ransac(
-            (matchpoints_a,matchpoints_b),
+        (matchpoints_a,matchpoints_b),
             skimage.transform.SimilarityTransform,
-            min_samples = 5,
-            residual_threshold = 10.0 )
-        success = True
+            min_samples = min_samples,
+            residual_threshold = 10.0,
+            is_model_valid = is_valid_transform )
+        outliers = ( inliers == False )
+        inlier_idxs = np.nonzero(inliers)[0]
+        outlier_idxs = np.nonzero(outliers)[0]
+
+        # we need to check this since ransac does not seem to :(
+        success = ( is_valid_transform(estimated_transform)
+                    and len(inlier_idxs) >= 5 )
 
         info['matches'] = matches
-        info['matchpoints_a'] = matchpoints_a
-        info['matchpoints_b'] = matchpoints_b
+        #info['matchpoints_a'] = matchpoints_a
+        #info['matchpoints_b'] = matchpoints_b
         info['estimated_transform'] = estimated_transform
-        info['inliers'] = inliers
+        #info['inliers'] = inliers
+
+        # plot matches, needs matplotlib axis :)
+        fig, axes = plt.subplots(nrows=2,ncols=1)
+        skimage.feature.plot_matches(
+            axes[0],
+            image_a,
+            image_b,
+            matchpoints_a,
+            matchpoints_b,
+            np.column_stack( ( inlier_idxs, inlier_idxs ) ),
+            matches_color='b' )
+        axes[0].axis( 'off' )
+        axes[0].set_title( "Inlier Correspondances" )
+        skimage.feature.plot_matches(
+            axes[1],
+            image_a,
+            image_b,
+            matchpoints_a,
+            matchpoints_b,
+            np.column_stack( ( outlier_idxs, outlier_idxs ) ),
+            matches_color='r' )
+        axes[0].axis( 'off' )
+        axes[0].set_title( "Outlier Correspondances" )
+        info['correspondance_image'] = generate_pyplot_image(
+            "correspondance_image.png",
+            fig,
+            base_dir,
+            preffix )
+        plt.close(fig)
 
         if success:
             warped_image_a = skimage.transform.warp(
@@ -124,8 +210,18 @@ def compute_similarity(
 
     warped_image_a = skimage.img_as_float( warped_image_a )
     image_b = skimage.img_as_float( image_b )
-    info['warped_image_a'] = warped_image_a
-    info['image_b_as_float'] = image_b
+    #info['warped_image_a'] = warped_image_a
+    #info['image_b_as_float'] = image_b
+    info['warped_image_a_image'] = generate_image(
+        "warped_image_a.png",
+        warped_image_a,
+        base_dir,
+        preffix )
+    info['image_b_as_float_image'] = generate_image(
+        "image_b_as_float.png",
+        image_b,
+        base_dir,
+        preffix )
     sim = skimage.metrics.structural_similarity( warped_image_a, image_b )
     info['sim'] = sim
 
@@ -135,7 +231,9 @@ def compute_similarity(
 
 def compute_similarity_from_paths(
         path_a: pathlib.Path,
-        path_b: pathlib.Path ) -> Tuple[ float, Dict ]:
+        path_b: pathlib.Path,
+        base_dir: pathlib.Path,
+        preffix: str ) -> Tuple[ float, Dict ]:
     """
     Returns the similarity between the images refered by the
     given file paths.
@@ -147,7 +245,104 @@ def compute_similarity_from_paths(
                                                        as_gray=True ) )
     image_b = skimage.img_as_float( skimage.io.imread( path_b.as_posix(),
                                                        as_gray=True ) )
-    return compute_similarity( image_a, image_b )
+    return compute_similarity( image_a, image_b, base_dir, preffix )
+
+## ======================================================================
+
+def generate_file_path(
+        name: str,
+        base_dir: pathlib.Path,
+        preffix: str ) -> pathlib.Path:
+    """
+    Returns the pathlib.Path object for the given name, base dir, and preffix
+    """
+    file_name = "{}{}".format( preffix, name )
+    p = pathlib.Path( base_dir ) / file_name
+    if len( p.suffix ) == 0:
+        p = pathlib.Path( base_dir ) / (file_name + ".png" )
+    return p
+
+## ======================================================================
+
+def generate_image( name: str,
+                    image_arr,
+                    base_dir: pathlib.Path,
+                    preffix: str ) -> pathlib.Path:
+    """
+    Generates an image (as a file) and returns the resulting
+    filename
+    """
+
+    filename = generate_file_path( name, base_dir, preffix )
+    image_arr = skimage.img_as_ubyte( skimage.color.gray2rgb( image_arr ),
+                                      force_copy=True)
+    skimage.io.imsave( filename.as_posix(), image_arr, check_contrast=False )
+    return filename
+
+## ======================================================================
+
+def generate_pyplot_image( name: str,
+                           fig,
+                           base_dir: pathlib.Path,
+                           preffix: str ) -> pathlib.Path:
+    """
+    Generates an image form the matplotlib Figure and returns path to it
+    """
+    filename = generate_file_path( name, base_dir, preffix )
+    fig.savefig( filename.as_posix() )
+    return filename
+
+## ======================================================================
+
+def generate_corner_image(
+        name: str,
+        image_arr,
+        corner_keypoints,
+        base_dir: pathlib.Path,
+        preffix: str ) -> pathlib.Path:
+    """
+    Generates an image representign the given corners and returns
+    the path to the generated image
+    """
+    filename = generate_file_path( name, base_dir, preffix )
+    image_arr = skimage.img_as_ubyte( skimage.color.gray2rgb( image_arr ),
+                                      force_copy=True )
+    for loc in corner_keypoints:
+        rr, cc = skimage.draw.circle_perimeter( int(loc[0]), int(loc[1]), 10,
+                                                shape=image_arr.shape)
+        color = ( 0, 255, 0 )
+        skimage.draw.set_color( image_arr,
+                                ( rr, cc ),
+                                color )
+    skimage.io.imsave( filename.as_posix(), image_arr, check_contrast=False )
+    return filename
+
+## ======================================================================
+
+def generate_keypoints_image(
+        name: str,
+        image_arr,
+        keypoints,
+        base_dir: pathlib.Path,
+        preffix: str ) -> pathlib.Path:
+    """
+    Generates an image showing the locations of the given keypoints.
+    Returns the path to the image.
+    """
+    filename = generate_file_path( name, base_dir, preffix )
+    image_arr = skimage.img_as_ubyte( skimage.color.gray2rgb( image_arr ),
+                                      force_copy=True )
+    for loc in keypoints:
+        rr, cc = skimage.draw.circle_perimeter( int(loc[0]), int(loc[1]), 10,
+                                                shape=image_arr.shape)
+        color = ( 0, 255, 0 )
+        skimage.draw.set_color( image_arr,
+                                ( rr, cc ),
+                                color )
+    skimage.io.imsave( filename.as_posix(), image_arr, check_contrast=False )
+    return filename
+
+## ======================================================================
 
 ## ======================================================================
 
@@ -240,8 +435,13 @@ def align_image_directories(
         with open( base_info_path / "{0:04d}-candidates.dill".format(index_a),
                    'wb' ) as f:
             dill.dump( candidates, f )
-        all_similarities = [ ( compute_similarity_from_paths( path_a, p ), p )
-                             for p in candidates ]
+        all_similarities = [
+            ( compute_similarity_from_paths(
+                path_a,
+                p,
+                base_info_path / "index-{0:04d}".format(index_a),
+                "sim-{0:04d}-".format(i) ), p )
+            for (i,p) in enumerate( candidates ) ]
         similarities = sorted(
             map(
                 lambda x: ( x[0][0], x[1], x[0][1] ),
