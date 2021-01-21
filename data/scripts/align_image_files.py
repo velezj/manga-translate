@@ -8,6 +8,7 @@ import pathlib
 from typing import Optional, Callable, Sequence, Tuple, Any, Dict
 import datetime
 import re
+import tempfile
 
 import skimage
 import skimage.color
@@ -17,6 +18,9 @@ import skimage.metrics
 import skimage.feature
 import skimage.measure
 import skimage.draw
+import skimage.exposure
+
+import pgmagick
 
 import dill
 import matplotlib.pyplot as plt
@@ -48,30 +52,76 @@ def compute_similarity(
     #info['image_a'] = image_a
     #info['image_b'] = image_b
 
-    # corner_keypoints_a = skimage.feature.corner_peaks(
-    #     skimage.feature.corner_harris( image_a ),
-    #     min_distance = 5,
-    #     threshold_rel = 0.1 )
-    # corner_keypoints_b = skimage.feature.corner_peaks(
-    #     skimage.feature.corner_harris( image_b ),
-    #     min_distance = 5,
-    #     threshold_rel = 0.1 )
-    corner_keypoints_a = skimage.feature.blob_doh(
-        image_a,
-        min_sigma=20,
-        max_sigma=100 )
-    corner_keypoints_b = skimage.feature.blob_doh(
-        image_b,
-        min_sigma=20,
-        max_sigma=100 )
+    corner_keypoints_a = skimage.feature.corner_peaks(
+        skimage.feature.corner_harris( image_a, k=0.2 ),
+        min_distance = 20,
+        threshold_rel = 0.1,
+        num_peaks=100)
+    corner_keypoints_b = skimage.feature.corner_peaks(
+        skimage.feature.corner_harris( image_b, k=0.2 ),
+        min_distance = 20,
+        threshold_rel = 0.1,
+        num_peaks = 100 )
+    # corner_keypoints_a = skimage.feature.blob_doh(
+    #     image_a,
+    #     min_sigma=10,
+    #     max_sigma=30,
+    #     num_sigma=10,
+    #     threshold=0.01,
+    #     overlap=0.5,
+    #     log_scale=True)
+    # corner_keypoints_b = skimage.feature.blob_doh(
+    #     image_b,
+    #     min_sigma=10,
+    #     max_sigma=30,
+    #     num_sigma=10,
+    #     threshold=0.01,
+    #     overlap=0.5,
+    #     log_scale=True)
+    corner_keypoints_a_original = np.copy( corner_keypoints_a )
+    corner_keypoints_b_original = np.copy( corner_keypoints_b )
+    # corner_keypoints_a = np.delete( corner_keypoints_a,
+    #                                 2,
+    #                                 1 )
+    # corner_keypoints_b = np.delete( corner_keypoints_b,
+    #                                 2,
+    #                                 1 )
+
+    # filter out keypoints near edges of page
+    edge_cutoff = 0.1
+    edge_keypoint_indices_a = []
+    edge_keypoint_indices_b = []
+    pix0_a = int( image_a.shape[0] * edge_cutoff )
+    pix1_a = int( image_a.shape[1] * edge_cutoff )
+    pix0_b = int( image_b.shape[0] * edge_cutoff )
+    pix1_b = int( image_b.shape[0] * edge_cutoff )
+    for i, kp in enumerate( corner_keypoints_a ):
+        x0 = kp[0]
+        x1 = kp[1]
+        if x0 < pix0_a or x0 > ( image_a.shape[0] - pix0_a ):
+            edge_keypoint_indices_a.append( i )
+        if x1 < pix1_a or x1 > ( image_a.shape[1] - pix1_a ):
+            edge_keypoint_indices_a.append( i )
+    for i, kp in enumerate( corner_keypoints_b ):
+        x0 = kp[0]
+        x1 = kp[1]
+        if x0 < pix0_b or x0 > ( image_b.shape[0] - pix0_b ):
+            edge_keypoint_indices_b.append( i )
+        if x1 < pix1_b or x1 > ( image_b.shape[1] - pix1_b ):
+            edge_keypoint_indices_b.append( i )
+    edge_keypoint_indices_a = list(set(edge_keypoint_indices_a))
+    edge_keypoint_indices_b = list(set(edge_keypoint_indices_b))
     corner_keypoints_a = np.delete( corner_keypoints_a,
-                                    2,
-                                    1 )
+                                    edge_keypoint_indices_a,
+                                    axis=0 )
     corner_keypoints_b = np.delete( corner_keypoints_b,
-                                    2,
-                                    1 )
+                                    edge_keypoint_indices_b,
+                                    axis=0 )
 
 
+    # store info/debug
+    info['corner_keypoints_a_original'] = corner_keypoints_a_original
+    info['corner_keypoints_b_original'] = corner_keypoints_b_original
     info['corner_keypoints_a'] = corner_keypoints_a
     info['corner_keypoints_b'] = corner_keypoints_b
     info['corner_keypoints_a_image'] = generate_corner_image(
@@ -89,8 +139,8 @@ def compute_similarity(
 
 
     extractor = skimage.feature.BRIEF(
-        descriptor_size=512,
-        patch_size=101 )
+        descriptor_size=256,
+        patch_size=49 )
     extractor.extract( image_a, corner_keypoints_a )
     keypoints_a = corner_keypoints_a[ extractor.mask ]
     descriptors_a = extractor.descriptors
@@ -117,7 +167,11 @@ def compute_similarity(
 
     warped_image_a = None
     use_raw_scaling = False
-    if descriptors_a.shape[0] > 5 and descriptors_b.shape[0] > 5:
+    has_enough_matches_for_transform = False
+    matches = None
+    matchpoints_a = None
+    matchpoints_b = None
+    if descriptors_a.shape[0] > 6 and descriptors_b.shape[0] > 6:
 
         matches = skimage.feature.match_descriptors(
             descriptors_a,
@@ -126,6 +180,10 @@ def compute_similarity(
         matchpoints_a = keypoints_a[ matches[:,0] ]
         matchpoints_b = keypoints_b[ matches[:,1] ]
 
+        if matchpoints_a.shape[0] >= 6 and matchpoints_b.shape[0] >= 6:
+            has_enough_matches_for_transform = True
+
+    if has_enough_matches_for_transform:
 
         # estimated_transform = skimage.transform.SimilarityTransform()
         # success = estimated_transform.estimate( matchpoints_a,
@@ -136,14 +194,16 @@ def compute_similarity(
             data_is_valid = True
             if data is not None and len(data) > 0:
                 data_is_valid = np.all( np.isfinite( data ) )
-            transform_is_finite = np.all( np.isfinite( trans.params))
-            transform_is_finite = ( transform_is_finite
-                                    and np.isfinite( trans.scale ) )
+            transform_is_finite = np.all( np.isfinite( trans.params ) )
             return transform_is_finite and data_is_valid
-        min_samples = min( matchpoints_a.shape[0] - 1, 20 )
+        min_samples = max( 5,
+                           int(matchpoints_a.shape[0] / 4.0) )
+        assert min_samples < matchpoints_a.shape[0]
+        assert min_samples < matchpoints_b.shape[0]
+        assert min_samples >= 5
         estimated_transform, inliers = skimage.measure.ransac(
-        (matchpoints_a,matchpoints_b),
-            skimage.transform.SimilarityTransform,
+            (matchpoints_a,matchpoints_b),
+            skimage.transform.EuclideanTransform,
             min_samples = min_samples,
             residual_threshold = 10.0,
             is_model_valid = is_valid_transform )
@@ -153,7 +213,7 @@ def compute_similarity(
 
         # we need to check this since ransac does not seem to :(
         success = ( is_valid_transform(estimated_transform)
-                    and len(inlier_idxs) >= 5 )
+                    and len(inlier_idxs) >= 6 )
 
         info['matches'] = matches
         #info['matchpoints_a'] = matchpoints_a
@@ -193,20 +253,20 @@ def compute_similarity(
         if success:
             warped_image_a = skimage.transform.warp(
                 image_a,
-                estimated_transform,
-                output_shape=image_b.shape )
+                estimated_transform )
         else:
-            _log().warning( "  failed to estimate transform" )
+            #_log().warning( "  failed to estimate transform" )
             use_raw_scaling = True
     else:
         use_raw_scaling = True
 
     if use_raw_scaling:
         # _log().warning( "  raw scaling being used" )
-        warped_image_a = skimage.transform.resize(
-            image_a,
-            image_b.shape,
-            anti_aliasing=True )
+        # warped_image_a = skimage.transform.resize(
+        #     image_a,
+        #     image_b.shape,
+        #     anti_aliasing=True )
+        warped_image_a = image_a
 
     warped_image_a = skimage.img_as_float( warped_image_a )
     image_b = skimage.img_as_float( image_b )
@@ -240,12 +300,89 @@ def compute_similarity_from_paths(
 
     Alsoreturns a dictionary with info/debug information
     """
+    base_dir.mkdir( parents=True, exist_ok=True )
 
     image_a = skimage.img_as_float( skimage.io.imread( path_a.as_posix(),
                                                        as_gray=True ) )
     image_b = skimage.img_as_float( skimage.io.imread( path_b.as_posix(),
                                                        as_gray=True ) )
+    image_a, image_b = prepare_images_for_comparison(
+        image_a, image_b, base_dir, preffix )
     return compute_similarity( image_a, image_b, base_dir, preffix )
+
+## ======================================================================
+
+def prepare_images_for_comparison(
+        image_a,
+        image_b,
+        base_dir: pathlib.Path,
+        prefix: str ) -> Tuple[ Any, Any ]:
+    """
+    Given two images, returns two (possibly new) images that have
+    been processed to be equal sized and ready for comparions
+    """
+
+    # find smallesst dimensions
+    min_idx_0 = min( image_a.shape[0], image_b.shape[0] )
+    min_idx_1 = min( image_a.shape[1], image_b.shape[1] )
+
+    # assert that we want a fixed image size
+    min_idx_0 = 512
+    min_idx_1 = 512
+
+    # image_a = skimage.exposure.match_histograms( image_a, image_b )
+    image_a = convert_to_pgmagick_image( image_a )
+    image_b = convert_to_pgmagick_image( image_b )
+    geom = "{}x{}".format( min_idx_1, min_idx_0 )
+    image_a.scale( geom )
+    image_b.scale( geom )
+    image_a.extent( geom )
+    image_b.extent( geom )
+
+    prepared_image_a = None
+    prepared_image_b = None
+    with tempfile.NamedTemporaryFile( 'wb', prefix="align_image_", suffix=".png" ) as f_a:
+        image_a.write( f_a.name )
+        f_a.flush()
+        with tempfile.NamedTemporaryFile( 'wb', prefix="align_image_", suffix=".png" ) as f_b:
+            image_b.write( f_b.name )
+            f_b.flush()
+
+            prepared_image_a = skimage.img_as_float(
+                skimage.io.imread( f_a.name,
+                                   as_gray=True ) )
+            prepared_image_b = skimage.img_as_float(
+                skimage.io.imread( f_b.name,
+                                   as_gray=True ) )
+
+    log_path = generate_image(
+        "prepared_image_a.png",
+        prepared_image_a,
+        base_dir,
+        prefix )
+    log_path = generate_image(
+        "prepared_image_b.png",
+        prepared_image_b,
+        base_dir,
+        prefix )
+    return ( prepared_image_a, prepared_image_b )
+
+## ======================================================================
+
+def convert_to_pgmagick_image( image_skimage ) -> pgmagick.Image:
+    """
+    Takes an skimage and returns a corresponding pgimage.
+    This will be a new, fresh image with *no sharing* of data.
+    """
+    with tempfile.NamedTemporaryFile( 'wb',
+                                      prefix='align_image_',
+                                      suffix=".png" ) as f:
+        if len(image_skimage.shape) < 3:
+            image_skimage = skimage.color.gray2rgb( image_skimage )
+        image_skimage = skimage.img_as_ubyte( image_skimage )
+        skimage.io.imsave( f.name, image_skimage )
+        f.flush()
+        return pgmagick.Image( f.name )
 
 ## ======================================================================
 
@@ -256,6 +393,7 @@ def generate_file_path(
     """
     Returns the pathlib.Path object for the given name, base dir, and preffix
     """
+    base_dir.mkdir( parents=True, exist_ok=True )
     file_name = "{}{}".format( preffix, name )
     p = pathlib.Path( base_dir ) / file_name
     if len( p.suffix ) == 0:

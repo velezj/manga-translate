@@ -16,6 +16,7 @@
 	  (chicken random)
 	  (chicken condition)
 	  (srfi 13)
+	  (srfi 14)
 	  (srfi 1))
 
   (define (%nordvpn-command output-parser . rest)
@@ -62,7 +63,7 @@
 	   (chosen-country (%random-list-element countries))
 	   (cities (%available-cities chosen-country))
 	   (chosen-city (%random-list-element cities)))
-      (list chosen-country chosen-city)))
+      (values chosen-country chosen-city)))
 
   (define (%nordvpn-connect country city)
     (%nordvpn-command
@@ -75,5 +76,45 @@
     (%nordvpn-command
      %single-string-parser
      "status"))
+
+  (define (%parse-lines-and-colons str)
+    (let ((lines (string-tokenize
+		  str
+		  (char-set-complement (char-set #\newline #\return)))))
+      (map
+       (lambda (kv) (cons (car kv) (cadr kv)))
+       (filter
+	(lambda (kv) (= (length kv) 2))
+	(map
+	 (lambda (line)
+	   (map
+	    (lambda (tok)
+	      (string-trim-both tok))
+	    (string-tokenize line (char-set-complement (char-set #\:)))))
+	 lines)))))
+   
+  (define (%parse-status-to-alist str)
+    (%parse-lines-and-colons str))
+
+  (define (%nordvpn-connection-info)
+    (let* ((status-string (%nordvpn-status))
+	   (info (%parse-status-to-alist status-string)))
+      info))
+  
+  (define (connect-to-random-city)
+    (let-values (( (country city) (%select-random-nordvpn-country-city)))
+      (%nordvpn-connect country city)))
+
+  (define (connected-to-vpn?)
+    (let ((connection-info (%nordvpn-connection-info)))
+      (if (or (null? connection-info)
+	      (and
+	       (assoc "Status" connection-info)
+	       (string= (cdr (assoc "Status" connection-info))
+			"Disconnected")))
+	  #f
+	  #t)))
+  
+  
   
   )
