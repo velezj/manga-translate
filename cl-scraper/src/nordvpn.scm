@@ -15,6 +15,8 @@
 	  (chicken io)
 	  (chicken random)
 	  (chicken condition)
+	  (chicken process-context)
+	  (chicken pretty-print)
 	  (srfi 13)
 	  (srfi 14)
 	  (srfi 1))
@@ -115,6 +117,15 @@
 	  #f
 	  #t)))
   
-  
+
+  (if (member "switch" (command-line-arguments))
+      (connect-to-random-city))
+  (if (member "status" (command-line-arguments))
+      (pretty-print (%nordvpn-status)))
+  (if (member "countries" (command-line-arguments))
+      (pretty-print (%available-countries)))
+  (pretty-print (%nordvpn-connection-info))
   
   )
+
+
