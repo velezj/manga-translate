@@ -15,6 +15,7 @@
 	  (chicken process)
 	  (chicken process-context)
 	  http-client
+	  ssax
 	  (srfi 13))
 
 
@@ -41,20 +42,42 @@
 	(lambda ()
 	  (with-output-to-file htmlpath
 	    (lambda () (copy-port inport (current-output-port))))
-	  (let ((args (list "-o" xhtmlpath htmlpath)))
+	  (let ((args (list "--html"
+			    "--xmlout"
+			    "--format"
+			    "-o" xhtmlpath
+			    htmlpath)))
 	    (let-values
-		(((proc-output proc-input pid) (process "html2xhtml" args)))
+		(((proc-output proc-input pid) (process "xmllint" args)))
 	      (close-input-port proc-output)
 	      (close-output-port proc-input)
 	      (with-input-from-file xhtmlpath
 		(lambda () (copy-port (current-input-port) outport))))))
 	(lambda ()  (delete-directory temp-dir #t)))))
+  
 
-
-  (define (fetch-xhtml url #!optional (MAX-BYTES 104857600))
+  (define (fetch-xhtml-string url #!optional (MAX-BYTES 104857600))
     (with-input-from-string (%fetch-as-string url MAX-BYTES)
       (lambda ()
 	(with-output-to-string 
 	  (lambda () (%html->xhtml (current-input-port) (current-output-port)))))))
 
+
+  (define *test-parser*
+    (ssax:make-parser
+
+     NEW-LEVEL-SEED 
+     (lambda (elem-gi attributes namespaces
+		      expected-content seed)
+       (cons elem-gi seed))
+     
+     FINISH-ELEMENT
+     (lambda (elem-gi attributes namespaces parent-seed seed)
+       seed)
+     
+     CHAR-DATA-HANDLER
+     (lambda (string1 string2 seed)
+       seed)
+     ))
+  
   )
