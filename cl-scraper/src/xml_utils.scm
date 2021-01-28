@@ -24,6 +24,10 @@
   (define *XIDEL-SEPARATOR* "<><><><><><><><><>")
 
   ;;
+  ;; The header in the output by xidel
+  (define *XIDEL-OUTPUT-HEADER* "**BEGIN-OUTPUT**")
+
+  ;;
   ;; The total maximum size (in bytes) for the output of
   ;; a call to xidel. This limits the amount of data ever
   ;; read from a process stdout to memory
@@ -38,6 +42,7 @@
   (define (%xpath-query-return-xml-string xml-doc xpath-query-string)
     (let* ((temp-dir (create-temporary-directory))
   	   (docpath (string-append temp-dir "/" "doc.xml")))
+      ;;(display (format "\ndocpath: ~a\n\n" docpath))
       (dynamic-wind
   	(lambda () #f)
 
@@ -46,10 +51,13 @@
 	    (lambda ()
   	      (write-bytevector (string->utf8 xml-doc))))
   	  (let ((args (list "--xml"
+			    "--output-format" "xml"
+			    "--output-header" *XIDEL-OUTPUT-HEADER*
+			    "--output-footer" ""
   			    "--output-separator" *XIDEL-SEPARATOR*
   			    "--xpath" xpath-query-string
   			    docpath )))
-  	    (let-values (( (proc-outport proc-inport pid prod-errport)
+  	    (let-values (( (proc-outport proc-inport pid proc-errport)
   			   (process* "xidel" args)))
   	      (dynamic-wind
   		(lambda () #f)
@@ -61,12 +69,12 @@
 		  
   		(lambda ()
   		  (close-input-port proc-outport)
+		  (close-input-port proc-errport)
   		  (close-output-port proc-inport))))))
 	
-  	;;(lambda ()  (delete-directory temp-dir #t)))))
-  	(lambda () #f))))
+  	(lambda ()  (delete-directory temp-dir #t)))))
 
-
+  
   ;;
   ;; cheap and dirty "xml" parser used *just* to extract results from
   ;; the xidel calls
@@ -82,12 +90,12 @@
   ;; Parse the xidel result xml prolog
   (define (%parse-xidel-prolog inport)
     (%read-line-expect "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" inport)
-    (let ((header (read-string 5 inport)))
+    (let ((header (read-string (string-length *XIDEL-OUTPUT-HEADER*) inport)))
       (if (eof-object? header)
 	  ""
-	  (if (equal? header "<xml>")
+	  (if (equal? header *XIDEL-OUTPUT-HEADER*)
 	      ""
-	      (raise (format "did not find initial xidel xml prolog: expected '<xml>' but found '~a'" header))))))
+	      (raise (format "did not find initial xidel xml prolog: expected '~a' but found '~a'" *XIDEL-OUTPUT-HEADER* header))))))
 
   ;;
   ;; parse the xidel elements
@@ -127,5 +135,12 @@
 		  line)))
 	    ;; (raise (condition (&expected-read-failed (msg msg))))))))
 	    (raise msg)))))
+
+
+  ;;
+  ;; The main interface to perform and xpath query
+  (define (xpath-query xml-doc query-string)
+    (%xidel-xml-result-parse-to-list
+     (%xpath-query-return-xml-string xml-doc query-string)))
   
   )

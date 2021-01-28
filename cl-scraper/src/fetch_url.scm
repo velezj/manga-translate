@@ -48,9 +48,11 @@
 			    "-o" xhtmlpath
 			    htmlpath)))
 	    (let-values
-		(((proc-output proc-input pid) (process "xmllint" args)))
+		(((proc-output proc-input pid proc-errport)
+		  (process* "xmllint" args)))
 	      (close-input-port proc-output)
 	      (close-output-port proc-input)
+	      (close-input-port proc-errport)
 	      (with-input-from-file xhtmlpath
 		(lambda () (copy-port (current-input-port) outport))))))
 	(lambda ()  (delete-directory temp-dir #t)))))
