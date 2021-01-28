@@ -13,39 +13,119 @@
 	  (chicken file)
 	  (chicken port)
 	  (chicken process)
-	  (srfi 13))
+	  (chicken irregex)
+	  (srfi 13)
+	  (srfi 28)
+	  (srfi 35))
+
 
   ;;
-  ;; performs a generic xpath query and return the results
+  ;; The separator between Xidel output elements
+  (define *XIDEL-SEPARATOR* "<><><><><><><><><>")
+
+  ;;
+  ;; The total maximum size (in bytes) for the output of
+  ;; a call to xidel. This limits the amount of data ever
+  ;; read from a process stdout to memory
+  (define *XIDEL-MAX-OUTPUT-SIZE* (* 1024 1024 100))
+  
+  ;;
+  ;; PERFORMS a generic xpath query and return the results
   ;; as a list of xml strings
   ;;
   ;; The input xml is given as a string and teh xpath query
   ;; is *also* given as a string
   (define (%xpath-query-return-xml-string xml-doc xpath-query-string)
     (let* ((temp-dir (create-temporary-directory))
-	   (docpath (string-append temp-dir "/" "doc.xml")))
+  	   (docpath (string-append temp-dir "/" "doc.xml")))
       (dynamic-wind
-	(lambda () #f)
+  	(lambda () #f)
 
-	(lambda () 
-	  (with-output-to-file docpath
-	    (write-bytevector (string->utf8 xml-doc)))
-	  (let ((args (list "--xml"
-			    "--xpath" xpath-query-string)))
-	    (let-values (( (proc-outport proc-inport oid)
-			   (process "xidel" args)))
-	      (dynamic-wind
-		(lambda () #f)
+  	(lambda () 
+  	  (with-output-to-file docpath
+	    (lambda ()
+  	      (write-bytevector (string->utf8 xml-doc))))
+  	  (let ((args (list "--xml"
+  			    "--output-separator" *XIDEL-SEPARATOR*
+  			    "--xpath" xpath-query-string
+  			    docpath )))
+  	    (let-values (( (proc-outport proc-inport pid prod-errport)
+  			   (process* "xidel" args)))
+  	      (dynamic-wind
+  		(lambda () #f)
 		
-		(lambda ()
+  		(lambda ()
 		  (with-output-to-string
-		    (copy-port proc-outport (current-output-port))))
+		    (lambda ()
+		      (copy-port proc-outport (current-output-port)))))
 		  
-		(lambda ()
-		  (close-input-port proc-outport)
-		  (close-output-port proc-inport))))))
+  		(lambda ()
+  		  (close-input-port proc-outport)
+  		  (close-output-port proc-inport))))))
 	
-	(lambda ()  (delete-directory temp-dir #t)))))
+  	;;(lambda ()  (delete-directory temp-dir #t)))))
+  	(lambda () #f))))
 
 
+  ;;
+  ;; cheap and dirty "xml" parser used *just* to extract results from
+  ;; the xidel calls
+  (define (%xidel-xml-result-parse-to-list xidel-xml)
+    (with-input-from-string xidel-xml
+      (lambda ()
+	(let* ((prolog (%parse-xidel-prolog (current-input-port)))
+	       (elements (%parse-xidel-elements (current-input-port)))
+	       (ending (%parse-xidel-ending (current-input-port))))
+	  (values elements (current-input-port))))))
+
+  ;;
+  ;; Parse the xidel result xml prolog
+  (define (%parse-xidel-prolog inport)
+    (%read-line-expect "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" inport)
+    (let ((header (read-string 5 inport)))
+      (if (eof-object? header)
+	  ""
+	  (if (equal? header "<xml>")
+	      ""
+	      (raise (format "did not find initial xidel xml prolog: expected '<xml>' but found '~a'" header))))))
+
+  ;;
+  ;; parse the xidel elements
+  (define (%parse-xidel-elements inport)
+    (if (eof-object? (peek-char inport))
+	'()
+	(let ((string-data (read-string *XIDEL-MAX-OUTPUT-SIZE* inport)))
+	  (irregex-split *XIDEL-SEPARATOR* string-data))))
+
+
+  ;;
+  ;; parse the xidel ending
+  (define (%parse-xidel-ending inport)
+    (%read-line-expect (list "</xml>" #!eof) inport))
+
+  ;; condition meaning the expected parsed input was not read
+  (define-condition-type &expected-read-failed &error
+    expected-read-failed
+    (msg expected-read-failed-msg))
+
+  ;;
+  ;; read a line from the input port and check that it
+  ;; matches the given string, raise error otherwise
+  (define (%read-line-expect expected inport)
+    (let ((line (read-line inport)))
+      (if (or (equal? line expected)
+	      (and (string? line)
+		   (string? expected)
+		   (string= line expected))
+	      (and (list? expected)
+		   (member line expected)))
+	  line
+	  (let ((msg
+		 (format
+		  "unexpected line read: expected='~a' read='~a'"
+		  expected
+		  line)))
+	    ;; (raise (condition (&expected-read-failed (msg msg))))))))
+	    (raise msg)))))
+  
   )
