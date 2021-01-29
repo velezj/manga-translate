@@ -16,8 +16,12 @@
 	  (chicken irregex)
 	  (srfi 13)
 	  (srfi 28)
-	  (srfi 35))
+	  (srfi 35)
+	  ssax)
 
+  ;;;;
+  ;;;; XPath query
+  ;;;;
 
   ;;
   ;; The separator between Xidel output elements
@@ -139,8 +143,28 @@
 
   ;;
   ;; The main interface to perform and xpath query
-  (define (xpath-query xml-doc query-string)
+  ;;
+  ;; This returns a list of xml-strings with the results
+  (define (xpath-query/as-xml-list xml-doc query-string)
     (%xidel-xml-result-parse-to-list
      (%xpath-query-return-xml-string xml-doc query-string)))
-  
+
+  ;;
+  ;; Perform an xpath query and return a list of SXML results
+  (define (xpath-query/as-sxml-list xml-doc query-string)
+    (map %xml->sxml (xpath-query/as-xml-list xml-doc query-string)))
+
+
+
+  ;;;;
+  ;;;; SXML
+
+
+  ;;
+  ;; parsing xml fragments into more scheme-y forms and tools for it
+  (define (%xml->sxml xml)
+    (with-input-from-string xml
+      (lambda () (ssax:xml->sxml (current-input-port) '()))))
+
+
   )
