@@ -10,10 +10,10 @@
 
 
 (define (%compute-sort-key line)
-  (let ((numbers (irregex-extract "\\d+" line)))
+  (let ((numbers (irregex-extract "chapter-\\d+" line)))
     (if (null? numbers)
 	0
-	(string->number (last numbers)))))
+	(string->number (substring (last numbers) 8)))))
 
 
 (define (%writeout-line-key-pair line outport #!optional (separator "|"))
