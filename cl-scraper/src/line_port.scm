@@ -104,5 +104,12 @@
 	  (line-input-port/%set-buff-finger! line-port
 	   (- (line-input-port/%buff-finger line-port) 1))
 	  line-port)))
+
+  ;;
+  ;; Close the line port and the base port it wraps
+  (define (line-input-port/close-port line-port)
+    (close-input-port (line-input-port/%base-inport line-port))
+    (line-input-port/%set-buff-finger! line-port 0)
+    (line-input-port/%set-buffer! line-port '()))
   
 )

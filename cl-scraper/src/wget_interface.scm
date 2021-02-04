@@ -17,6 +17,7 @@
 	  (srfi 1)
 	  (srfi 13)
 	  (srfi 28)
+	  (jplankton line_port)
 	  utf8)
 
 
@@ -27,38 +28,54 @@
     (concatenate! (list args '("--server-response"))))
 
   ;;
-  ;; parse out a request chunk from the output
-  ;; given the header line and a port with the rest
-  (define (%parse-wget-request-output headerline port)
-    (let ((full-string "")
-	  (request-string ""))
-      (do (( (line (read-line)) (line (read-line))))
+  ;; parse out hte request lines from the line port 
+  (define (%parse-wget-request-output line-port)
+    (let ((header (line-input-port/read-line line-port))
+	  (lines '()))
+      (do ((line (line-input-port/read-line line-port)
+		 (line-input-port/read-line line-port)))
 	  ((or (eof-object? line)
 	       (string-prefix? line "--"))
-	   (values full-string request-string))
-	#f)))
-	
+	   (if (eof-object? line)
+	       (reverse lines)
+	       (reverse (cons line lines))))
+	(set! lines (cons line lines)))))
+    
+
+  ;;
+  ;; Parse out the liens from  the request into an alist structure
+  (define (%parse-request-lines lines)
+    (let ((matches (irregex-match "^--[^-]+--\\s+(.*)\s*$" (first lines))))
+      (if (not (irregex-match-valid-index? matches 1))
+	  (raise (format (string-append "Failed to parse wget request header "
+					"line, line=~a")
+			 (first lines)))
+	  (list
+	   (cons url: (irregex-match-substring matches 1))))))
+	  
 
   ;;
   ;; parse the wget output
   (define (%wget-output-parse port)
-    (let ((output-string "")
-	  (requested-urls '()))
-      (do (( (line (read-line port))
-	     (line (read-line port))))
+    (let ((output-lines '())
+	  (requested-urls '())
+	  (line-port (line-input-port port 1 0 '())))
+      (do ((line (line-input-port/read-line line-port)
+		 (line-input-port/read-line line-port)))
 	  ((eof-object? line) (list
-			       (cons full: output-string)
+			       (cons lines: (reverse output-lines))
 			       (cons request-urls: requested-urls)))
 	(if (string-prefix? line "--")
-	    (let-values (( (full-string request-string)
-			   (%parse-wget-request-output line port)))
-	      (set! output-string (string-append output-string full-string))
-	      (set! requested-urls
-		(append requested-urls (list %parse-request-string
-					     request-string)))
-	      (set! output-string
-		(string-append output-string line (string #\newline))))))))
-  
+	    (begin
+	      (line-input-port/unread-line line-port)
+	      (let ((request-lines (%parse-wget-request-output line-port)))
+		(set! output-lines (append (reverse request-lines)
+					   output-lines))
+		(set! requested-urls
+		  (append requested-urls (list %parse-request-lines
+					       request-lines)))))
+	    (set! output-lines (cons line output-lines))))))
+			     
   ;;
   ;; runs wget
   (define (%call-wget-and-parse-output args)
