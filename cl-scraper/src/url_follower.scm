@@ -18,7 +18,8 @@
 	  (srfi 1)
 	  (srfi 13)
 	  (srfi 28)
-	  utf8)
+	  utf8
+	  memoize)
 
   ;;
   ;; Weights for cat/block/bidi differences
@@ -218,6 +219,9 @@
 	       (else (values total-3 result-3))))))))
 
 
+  (define %naive-pair-sequence-alignment/memoized (memoize %naive-pair-sequence-alignment))
+
+
   (define (%compute-alignment seq-a seq-b align)
     (if (null? align)
 	(values '() '())
@@ -250,7 +254,7 @@
 	       c)))
      lst))
 
-  (define (sequence-pair-alignment a b)
+  (define (sequence-pair-alignment/direct a b)
     (let-values (( (score ralign) (%naive-pair-sequence-alignment a b *DEFAULT-COST-FUNCTION* (max (length a) (length b)) '())))
       (let ((align (reverse ralign)))
 	(let-values (( (aligned-a aligned-b) (%compute-alignment a b align)))
@@ -261,10 +265,29 @@
 	   score)))))
 
 
+  (define (sequence-pair-alignment a b)
+    (let-values (( (score ralign) (%naive-pair-sequence-alignment/memoized a b *DEFAULT-COST-FUNCTION* (max (length a) (length b)) '())))
+      (let ((align (reverse ralign)))
+	(let-values (( (aligned-a aligned-b) (%compute-alignment a b align)))
+	  (values
+	   (list->string (%translate-alignment-values-to-string aligned-a))
+	   (list->string (%translate-alignment-values-to-string aligned-b))
+	   align
+	   score)))))
+
 
   (define *test-seq-a-000* (string->list "abcd"))
   (define *test-seq-b-000* (string->list "abd"))
   (let-values (( res (sequence-pair-alignment *test-seq-a-000* *test-seq-b-000*)))
-    (pp res))
+    (pp res)
+    (newline))
+
+  (define *test-seq-a-001* (string->list "this is great! no buts"))
+  (define *test-seq-b-001* (string->list "this ain't great but no"))
+  (let-values (( res (sequence-pair-alignment *test-seq-a-001* *test-seq-b-001*)))
+    (pp res)
+    (newline))
+
+  
   
   )
