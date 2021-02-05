@@ -14,28 +14,33 @@
 	  (chicken pretty-print)
 	  (chicken irregex)
 	  (chicken process)
+	  (chicken condition)
 	  (srfi 1)
 	  (srfi 13)
 	  (srfi 28)
+	  ;; (srfi 35)
 	  (jplankton line_port)
 	  utf8)
 
+  ;;
+  ;; condition for failed parsing
+  ;; (define-condition-type &parse-error &message
+  ;;   parse-error?)
 
   ;;
   ;; create the full wget argument list from the user's wanted
   ;; argumetns and those needed by this module
   (define (%wget-arguments-merge args)
-    (concatenate! (list args '("--server-response"))))
+    (concatenate! (list '("--server-response") args)))
 
   ;;
   ;; parse out hte request lines from the line port 
   (define (%parse-wget-request-output line-port)
-    (let ((header (line-input-port/read-line line-port))
-	  (lines '()))
+    (let ((lines '()))
       (do ((line (line-input-port/read-line line-port)
 		 (line-input-port/read-line line-port)))
 	  ((or (eof-object? line)
-	       (string-prefix? line "--"))
+	       (string-prefix? "--" line))
 	   (if (eof-object? line)
 	       (reverse lines)
 	       (reverse (cons line lines))))
@@ -45,13 +50,37 @@
   ;;
   ;; Parse out the liens from  the request into an alist structure
   (define (%parse-request-lines lines)
-    (let ((matches (irregex-match "^--[^-]+--\\s+(.*)\s*$" (first lines))))
-      (if (not (irregex-match-valid-index? matches 1))
-	  (raise (format (string-append "Failed to parse wget request header "
-					"line, line=~a")
-			 (first lines)))
-	  (list
-	   (cons url: (irregex-match-substring matches 1))))))
+    (let ((matches (irregex-match "^--(\\d+)-(\\d+)-(\\d+)[^-]+--\\s+(.*)\s*$" (first lines))))
+      (if (not matches)
+	  (begin
+	    (let ((message
+	    	   (format (string-append
+	    		    "Unable to parse request header line."
+	    		    "line=~a")
+	    		   (first lines))))
+	      (signal (condition (list 'exn 'message message))))) 
+	    ;; (raise (condition
+	    ;; 	    (&parse-error
+	    ;; 	     (message
+	    ;; 	      (format (string-append
+	    ;; 		       "Unable to parse request header line."
+	    ;; 		       "line=~a")
+	    ;; 		      (first lines)))))))
+	  (if (not (irregex-match-valid-index? matches 4))
+	      (begin
+		(let ((message
+		       (format (string-append "Failed to parse wget request "
+					      "header line, line=~a")
+			       (first lines))))
+		  (signal (list 'exn 'message message))))
+		;; (raise (condition
+		;; 	(&parse-error
+		;; 	 (message
+		;; 	  (format (string-append "Failed to parse wget request "
+		;; 				 "header line, line=~a")
+		;; 		  (first lines)))))))
+	      (list
+	       (cons url: (irregex-match-substring matches 4)))))))
 	  
 
   ;;
@@ -65,15 +94,15 @@
 	  ((eof-object? line) (list
 			       (cons lines: (reverse output-lines))
 			       (cons request-urls: requested-urls)))
-	(if (string-prefix? line "--")
+	(if (string-prefix? "--" line)
 	    (begin
 	      (line-input-port/unread-line line-port)
 	      (let ((request-lines (%parse-wget-request-output line-port)))
 		(set! output-lines (append (reverse request-lines)
 					   output-lines))
 		(set! requested-urls
-		  (append requested-urls (list %parse-request-lines
-					       request-lines)))))
+		  (append requested-urls (list (%parse-request-lines
+						request-lines))))))
 	    (set! output-lines (cons line output-lines))))))
 			     
   ;;
@@ -86,8 +115,8 @@
 	  (lambda () #f)
 
 	  (lambda ()
-	    (let ((outres (%wget-output-parse proc-outport)))
-	      (copy-port proc-errport (current-output-port))
+	    (let ((outres (%wget-output-parse proc-errport)))
+	      ;;(copy-port proc-errport (current-output-port))
 	      outres))
 
 	  (lambda ()
