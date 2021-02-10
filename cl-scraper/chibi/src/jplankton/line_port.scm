@@ -4,18 +4,6 @@
 ;; ;;;;
 
 
-;; ;;;;
-;; ;;;; Library definition
-;; (if (member 'chibi (features))
-;;     (import (meta)))
-;; (define-library (jplankton line_port)
-;;       (import (scheme base)
-;; 	      (scheme read)
-;; 	  (srfi 1)
-;; 	  (srfi 9)
-;; 	  (srfi 23)
-;; 	  (srfi 166))
-;;   (begin
 
 (define-record-type <line-input-port>
   (line-input-port base-inport max-lines-to-buffer buff-finger buffer)
