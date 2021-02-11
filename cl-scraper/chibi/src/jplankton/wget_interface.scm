@@ -8,6 +8,23 @@
 ;; condition for failed parsing
 (define-condition-type &parse-error &message
   parse-error?)
+(define (%%write-parse-error parse-err wr out)
+  (write-string "{CONDITION <parse-error>: " out)
+  (wr (condition-ref parse-err 'message))
+  (write-string "}" out))   
+;;;; chibi specific
+(if (member 'chibi (features))
+    (type-printer-set!
+     (type-of (condition (&parse-error (message ""))))
+     %%write-parse-error))
+
+
+;;
+;; error throwing that will display the condition using the
+;; custom printer
+(define (throw-condition c)
+  (error (show #f c) c))
+
 
 ;;
 ;; create the full wget argument list from the user's wanted
@@ -93,7 +110,7 @@
 	    		 (displayed (first lines)))))
 	      (display message)
 	      (newline)
-	      (error (condition (&parse-error (message message))))))
+	      (throw-condition (condition (&parse-error (message message))))))
 	  (begin
 	    (set! found-results
 	      (alist-cons 'url: (regexp-match-submatch matches 1)
