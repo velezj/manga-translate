@@ -1,0 +1,5 @@
+(define-library (jplankton process)
+  (export process* process-wait)
+  (import (scheme base)
+	  (chibi process))
+  (include "process.scm"))
