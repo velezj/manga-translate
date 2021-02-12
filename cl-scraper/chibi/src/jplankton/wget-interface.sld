@@ -1,7 +1,9 @@
 ;;;;
 ;;;; Library definition
 (define-library (jplankton wget-interface)
-  (export wget-recursive throw-condition &parse-error)
+  (export wget-recursive
+	  *DEFAULT-PARSERS*
+  	  throw-condition &parse-error)
   (import (scheme base)
 	  (scheme write)
 	  (srfi 1)   ; list library
@@ -11,8 +13,7 @@
 	  (srfi 130) ; string library (scursor-based)
 	  (srfi 166) ; monadic formatting
 	  (jplankton line-port)
-	  (jplankton process)
-	  (chibi ast))
+	  (jplankton vendor))
 
   (include "wget_interface.scm")
   

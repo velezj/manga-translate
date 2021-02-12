@@ -12,18 +12,15 @@
   (write-string "{CONDITION <parse-error>: " out)
   (wr (condition-ref parse-err 'message))
   (write-string "}" out))   
-;;;; chibi specific
-(if (member 'chibi (features))
-    (type-printer-set!
-     (type-of (condition (&parse-error (message ""))))
-     %%write-parse-error))
-
+(custom-printer-set!
+ (type-of (condition (&parse-error (message ""))))
+ %%write-parse-error)
 
 ;;
 ;; error throwing that will display the condition using the
 ;; custom printer
 (define (throw-condition c)
-  (error (show #f c) c))
+  (raise (list (show #f c) c)))
 
 
 ;;
@@ -49,12 +46,68 @@
 	     (set! lines (cons line lines))))))
     result))
 
-;;
-;; Parse out the liens from  the request into an alist structure
-(define (%parse-request-lines lines)
-  (let ((found-results '()))
 
-    ;; Look over all lines and extract save location(s)
+;;
+;; parses out the lines given a list of parsers/callbacks.
+;; each parser is called in an arbitrary order and each
+;; must return two values: ( parser-id, list of results )
+;; These lists are concatenated into the final result of
+;; this function
+(define (%parse-request-lines lines parsers)
+  (let ((found-results '()))
+    (for-each
+     (lambda (parser)
+       (let-values (( (name local-results) (parser lines)))
+	 ;; (display (show #f "  ran parser "
+	 ;; 		"'" (displayed name) "'"
+	 ;; 		nl))
+	 (if (not (list? local-results))
+	     (let ((msg (show #f
+			      "parser "
+			      "'" (displayed name) "'"
+			      " returned non-list results: "
+			      (written local-results))))
+	       (throw-condition
+		(condition (&parse-error (message msg)))))
+	     (set! found-results
+	       (append local-results found-results)))))
+     parsers)
+    found-results))
+
+
+;;
+;; Parse out urls being requested by wget
+(define (%parser/request-urls lines)
+  (let ((found-results '())
+	(matches (regexp-search
+		  '(: bol "--" (+ num) "-" (+ num) "-"
+		      (+ num) (+ (~ "-")) "--" (+ space)
+		      ($ (+ any)) (* space) eol)
+		  (first lines))))
+    (if (not matches)
+	(begin
+	  (let ((message
+	    	 (show #f 
+	    	       "Unable to parse request header line."
+	    	       "line="
+	    	       (displayed (first lines)))))
+	    (display message)
+	    (newline)
+	    (throw-condition (condition (&parse-error (message message))))))
+	(begin
+	  (set! found-results
+	    (alist-cons 'url: (regexp-match-submatch matches 1)
+			found-results))
+	  (display (show #f "URL: "
+			 (displayed (regexp-match-submatch matches 1))
+			 nl))))
+    (values '%parser/request-urls found-results)))
+
+
+;;
+;; parse out saved files
+(define (%parser/saved-files lines)
+  (let ((found-results '()))
     (for-each
      (lambda (line)
        (let ((matches (regexp-search
@@ -74,8 +127,13 @@
 			      (displayed (regexp-match-submatch matches 1))
 			      nl))))))
      lines)
+    (values '%parser/saved-files found-results)))
 
-    ;; look for errors
+
+;;
+;; parse out errors from wget
+(define (%parser/errors lines)
+  (let ((found-results '()))
     (for-each
      (lambda (line)
        (let ((matches (regexp-search
@@ -94,37 +152,15 @@
 		 (alist-cons 'error: (list code message)
 			     found-results))))))
      lines)
+    (values '%parser/errors found-results)))
 
-    ;; Look at the header line for the url accessed
-    (let ((matches (regexp-search
-		    '(: bol "--" (+ num) "-" (+ num) "-"
-			(+ num) (+ (~ "-")) "--" (+ space)
-			($ (+ any)) (* space) eol)
-		    (first lines))))
-      (if (not matches)
-	  (begin
-	    (let ((message
-	    	   (show #f 
-	    		 "Unable to parse request header line."
-	    		 "line="
-	    		 (displayed (first lines)))))
-	      (display message)
-	      (newline)
-	      (throw-condition (condition (&parse-error (message message))))))
-	  (begin
-	    (set! found-results
-	      (alist-cons 'url: (regexp-match-submatch matches 1)
-			  found-results))
-	    (display (show #f "URL: "
-			   (displayed (regexp-match-submatch matches 1))
-			   nl)))))
-  
-    found-results))
+
+
 
 
 ;;
 ;; parse the wget output
-(define (%wget-output-parse port)
+(define (%wget-output-parse port parsers)
   (let ((output-lines '())
 	(requested-urls '())
 	(line-port (line-input-port port 1 0 '())))
@@ -141,12 +177,13 @@
 					 output-lines))
 	      (set! requested-urls
 		(append requested-urls (list (%parse-request-lines
-					      request-lines))))))
+					      request-lines parsers))))))
 	  (set! output-lines (cons line output-lines))))))
+
 
 ;;
 ;; runs wget
-(define (%call-wget-and-parse-output args)
+(define (%call-wget-and-parse-output args parsers)
   (let ((full-args (%wget-arguments-merge args)))
     (display (show #f "WGET: " (displayed full-args) nl))
     (let-values (( (proc-outport proc-inport proc-errport pid)
@@ -155,7 +192,7 @@
 	(lambda () #f)
 
 	(lambda ()
-	  (let ((outres (%wget-output-parse proc-errport)))
+	  (let ((outres (%wget-output-parse proc-errport parsers)))
 	    ;; WGET writes output to STDERR (?!)
 	    ;;(copy-port proc-errport (current-output-port))
 	    outres))
@@ -166,11 +203,18 @@
 	  (close-input-port proc-outport)
 	  (close-input-port proc-outport))))))
 
+;;
+;; Default list of parsers to apply
+(define *DEFAULT-PARSERS*
+  (list
+   %parser/request-urls
+   %parser/errors
+   %parser/saved-files))
 
 ;;
 ;; performs a wget recursive request and return the resulting
 ;; files and the list of urls followed
-(define (wget-recursive root-url depth-limit accept-regex wait)
+(define (wget-recursive root-url depth-limit accept-regex wait parsers)
   (let ((args (list "--recursive"
 		    "--level" (number->string depth-limit)
 		    "--regex-type" "posix"
@@ -180,7 +224,5 @@
 		    "--random-wait"
 		    "--trust-server-names"
 		    root-url)))
-    (let ((wget-results (%call-wget-and-parse-output args)))
+    (let ((wget-results (%call-wget-and-parse-output args parsers)))
       wget-results)))
-
-
